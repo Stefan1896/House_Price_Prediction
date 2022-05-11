@@ -1,45 +1,67 @@
 ---
 title: "House Price Prediction with XGBoost"
-author: "Stefan Werner"
-date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
   html_document:
+    fig_caption: true
     toc: true
-    toc_depth: 2
-    number_sections: true
+    fig_width: 7
+    fig_height: 4.5
+    theme: readable
+    highlight: tango
+    code_folding: hide
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, cache = F, message = F, warning = F, comment = F)
+knitr::opts_chunk$set(echo = TRUE, cache = F, message = F, warning = F, comment = F, error = F)
+knitr::opts_chunk$set(out.width="100%", fig.height = 4.5, split=FALSE, fig.align = 'default', comment = NA)
+options(dplyr.summarise.inform = FALSE)
 options(scipen = 999999)
 ```
 
 <p align="right">Please click here to visit my <a href="https://github.com/Stefan1896">github page</a>. <i class="fas fa-hand-peace"></i></span> </p>
 
-# Problem definition
+
+```{r, out.height = "450px", echo=FALSE}
+if (!require(here)) install.packages('here')  
+knitr::include_graphics(here("haus.jpeg"))
+```
+
+# Introduction
 
 
-The goal of this challenge is to predict the sale price of residental homes in Ames, Iowa. The dataset comprises 79 explanatory variables. We will use a XGBoost Regression algorithm for prediction.
+The goal of this project is to predict the sale price of residental homes in Ames, Iowa. The dataset comprises 79 explanatory variables. A XGBoost Regression algorithm will be used for prediction.
 
-More information about data: <http://jse.amstat.org/v19n3/decock.pdf>
+More information about data can be found here: <http://jse.amstat.org/v19n3/decock.pdf>
 
-# Import data
+# Preperations {.tabset}
 
-Loading train and test data and get packages:
+## Load Packages
+
+First, relevant packages are loaded. We load a range of libraries for general data wrangling and general visualisation together with more specialised tools for modelling.
 
 ```{r}
-if (!require(here)) install.packages('here')
-if (!require(tidymodels)) install.packages('tidymodels')
-if (!require(tidyverse)) install.packages('tidyverse')
-if (!require(janitor)) install.packages('janitor')
+if (!require(here)) install.packages('here')  
+if (!require(tidymodels)) install.packages('tidymodels') 
+if (!require(tidyverse)) install.packages('tidyverse') 
+if (!require(janitor)) install.packages('janitor') 
 if (!require(EnvStats)) install.packages('EnvStats')
 if (!require(ggpubr)) install.packages('ggpubr')
 if (!require(gridExtra)) install.packages('gridExtra')
-if (!require(vip)) install.packages('vip')
-if (!require(visdat)) install.packages('visdat')
-if (!require(DataExplorer)) install.packages('DataExplorer')
+if (!require(vip)) install.packages('vip') 
+if (!require(visdat)) install.packages('visdat') 
+if (!require(DataExplorer)) install.packages('DataExplorer', repos = "http://cran.us.r-project.org")
+if (!require(igraph)) install.packages('igraph', repos = "http://cran.us.r-project.org")
+if (!require(xgboost)) install.packages('xgboost', repos = "http://cran.us.r-project.org")
 if (!require(knitr)) install.packages('knitr')
-                                             
+```
+
+## Load Data
+
+The data was downloaded from kaggle and stored locally (login necessary). The here package is used to locate the files relative to the project root. The clean_names() function from the janitor package is used to make clear variable names. We already have a first general look at the amount of missing data:
+
+
+```{r}
+
 training_data <- read_csv(here("Data", "train.csv")) %>%
                   clean_names()
 testing_data <-  read_csv(here("Data", "test.csv")) %>%
@@ -47,27 +69,40 @@ testing_data <-  read_csv(here("Data", "test.csv")) %>%
 
 combined <- bind_rows(training_data, testing_data)
 train_rows <- nrow(training_data)
-```
-# Data Exploration and Preparation
 
-Before modeling, lets check out some information about the data structure, get more information about the target variable and prepare relevant independent variables:
-
-## Data Structure
-
-Take a look at the data structure:
-
-```{r}
-vis_dat(combined)
+cat(dim(training_data[!complete.cases(training_data),])[1], "out of", train_rows, "observations have at least one missing value.")
 ```
 
-Some character variables have a lots of missing data - we will drop columns with missing rate in the train set >40% 
+
+# Missing data
+
+We already saw that we have at least one missing value for every observation. On the other side, we have 79 explanatory variables in the training set. Therefore, we will first have a closer look on the distribution of missing values in our dataset. We will use the DataExplorer package for that, since it gives a nice graphical overview over the amount of missing data. In a second step, we will also use the DataExplorer package to delete all variables with missing rate in the train set >40%:
 
 ```{r}
-missing_plot <- DataExplorer::plot_missing(training_data, missing_only = T)
+vis_dat(training_data)
+```
+Notes:
+
+- Especially some character variables have a lot of missing data.
+- Although there seems to be quite a few variables with a very high percentage of missing data, the most variables don't have any missing values at all.
+- We will drop columns with missing rate in the train set >40%.
+<br>
+<br>
+
+#### Remove Missing Data
+
+The next graph shows an overview of all the variables with at least one missing value and their missing rate. The DataExplorer package is used again to make this plot. It makes it easy to specify an indicator containing all variables which have at least 40% missing values:
+
+```{r}
+missing_plot <- DataExplorer::plot_missing(training_data, missing_only = T, ggtheme = theme_classic())
 drop_cols <- missing_plot$data %>% filter(Band %in% c("Remove", "Bad")) %>% pull(feature)
 ```
 
-## Target Variable
+# Target Variable {.tabset}
+
+## Original Scale
+
+We will continue by looking at the distribution of our target variable.
 
 ```{r}
 # hist
@@ -94,7 +129,14 @@ g3 <- ggplot(training_data, aes(sample = sale_price))+
 grid.arrange(g1, arrangeGrob(g2, g3, nrow=2), nrow = 1)
 ```
 
-Distribution is right-skewed. Lets see if Log transformation helps:
+Notes:
+
+- All three graphs show clear evidence for a right-skewed distribution.
+- Common transformations for right-skewed data include log transformation.
+
+## Log-Transformation
+
+Lets see if Log transformation helps to make the distribution more normal:
 
 ```{r}
 # hist
@@ -121,30 +163,18 @@ g3 <- ggplot(training_data, aes(sample = log(sale_price)))+
 grid.arrange(g1, arrangeGrob(g2, g3, nrow=2), nrow = 1)
 ```
 
-Distribution looks way better after log transformation. 
+Notes:
 
-## Exploratory Analysis
+- The Distribution looks way better after log transformation.
+- All three graphs show almost no signs of remaining skeweness. 
+- Log Transformation will be applied in modelling.
 
-We will run a first regression without variables wich have missing data to get a first impression which variables are important in predicting Sale Price:
+# Exploratory Analysis {.tabset}
 
-```{r}
-regressionResult <- tidy(lm(log(sale_price) ~ ., data = training_data[ ,sapply(training_data, function(x) !any(is.na(x)))]))
-kable(head(arrange(regressionResult, -statistic)))
-```
+## Important Predictors
 
-The roof materials seems to have a big influence on Sale Price. Let us further look at this variable:
+In a first regression using all variables which not have any missing data as predictors, Overall Quality, First Floor Square Foot, Zoning Classification and Overall Condition were identified as potentially important predictors. Therefore, these four variables are plotted in their relationship with Sale Price below. The results from the regression used to identify these predicotrs can be seen in the "Quick" Regression tab above.
 
-```{r}
-kable(training_data %>% count(roof_matl))
-```
-Ups, the variable is highly unbalanced and has low variability, over 98% of houses have Standard (Composite) Shingle as Roof Material. Let us look again at the regression without roof material:
-
-```{r}
-regressionResult <- tidy(lm(log(sale_price) ~ ., data = subset(training_data[ ,sapply(training_data, function(x) !any(is.na(x)))], select = -c(roof_matl))))
-kable(head(arrange(regressionResult, -statistic)))
-```
-
-We can see that Overall Quality has also a big influence on Sale Price. This variable is also more balanced, which is shown below. We will plot the 4 most important variables in their relation to share price:
 
 ```{r}
 par(mfrow=c(2,2))
@@ -161,9 +191,9 @@ g1 <- ggplot(aes(as.factor(overall_qual), sale_price), data = training_data) +
 
 g2 <- ggplot(aes(x1st_flr_sf, sale_price), data = combined[!is.na(combined$sale_price),]) +
   geom_point(col = "indianred") +
-  xlab("Second floor square feet") + 
+  xlab("First floor square feet") + 
   ylab("Sale Price") + 
-  ggtitle("Price vs Second floor square feet") +
+  ggtitle("Price vs First floor square feet") +
   theme_classic()
 
 
@@ -187,10 +217,50 @@ g4 <- ggplot(aes(as.factor(overall_cond), sale_price), data = training_data) +
 ggarrange(g1, g2, g3, g4,
           ncol = 2, nrow = 2)
 ```
+Notes:
 
-## Data Preprocessing
+- For all four variables, the direction of the relationship can be seen clearly when looking at the plots. 
+- Especially Overall Quality and First Flore Square Feet are showing a strong pattern in their relationship with house price.
 
-We will now fix typos, remove outliers and create further variables which could be useful in Sale Price Prediction:
+## "Quick" Regression 
+
+AS said before, a quick regression using all variables which not have any missing data as predictors was run to get a first impression on which variables may be important for predicting Sale Price. Log-Transformation is applied to SalePrice to address the skeweness of this variable showed above.
+
+```{r}
+regressionResult <- tidy(lm(log(sale_price) ~ ., data = training_data[ ,sapply(training_data, function(x) !any(is.na(x)))]))
+kable(head(arrange(regressionResult, -statistic), 10))
+```
+Notes:
+
+- The t-statistic is the coefficient divided by its standard error and gives a good overview of the relative importance of predictors.
+- The roof materials seems to have a big influence on Sale Price and will be examined further.
+- Square Foot of the first floor, Overal Quality and Overall Condition also have a strong relationship with Sale Price, which seems highly plausible.
+
+The roof materials seems to have a big influence on Sale Price. Let us further look at this variable:
+
+```{r}
+kable(training_data %>% count(roof_matl))
+```
+
+Ups, the variable is highly unbalanced and has low variability, over 98% of houses have Standard (Composite) Shingle as Roof Material. Let us look again at the regression without roof material:
+
+```{r}
+regressionResult <- tidy(lm(log(sale_price) ~ ., data = subset(training_data[ ,sapply(training_data, function(x) !any(is.na(x)))], select = -c(roof_matl))))
+kable(head(arrange(regressionResult, -statistic)))
+```
+
+Notes:
+
+- Without roof material, we see strong relationships with Sale Price for: Overall Quality, First Floor Square Feet, Zoning Classification, Second Floor Square Feet and Overall Condition
+
+
+# Data Preprocessing {.tabset}
+
+In the next step, typos will be fixed, outliers will be removed and further variables which could be useful in Sale Price Prediction will be created.
+
+## Outliers
+
+The plot below shows two data points which were removed since they are untypical from visual inspection and the model performance was better without them: 
 
 ```{r}
 #fix typos
@@ -206,9 +276,12 @@ ggplot(combined, aes(x=gr_liv_area, y=sale_price))+geom_point()+
 combined <- combined %>% filter(!(gr_liv_area>4500 & !is.na(sale_price)))
 ```
 
-The two marked points were removed, since they seem to be untypical from visual inspection and the model performance was better without them. Next, lets create new features:
 
-```{r}
+## Feature Creation
+
+There are many variables in the dataset which can be further transformed to extract new features. In the following code, 15 new features are created. While many of them are indicators whether the house is containing something (like a pool or a second floor). Other variables are combined with the goal to create one variable with a stronger relationship to SalePrice than the individual variables. For example, the variable "overall_sf" (Overall square feet) is created, combining the above ground living area available in the house and the total area of the basement (both measured in square feet).
+
+```{r class.source = 'fold-show'}
 combined <- combined %>% mutate(has_bsmt = as.numeric(total_bsmt_sf!=0),
                           has_2ndFloor = as.numeric(x2nd_flr_sf!=0),
                           has_pool = as.numeric(pool_area!=0),
@@ -230,20 +303,28 @@ training_data <- combined %>% filter(!is.na(sale_price))
 testing_Data <- combined %>% filter(is.na(sale_price))
 ```
 
-# Model 
+# Modelling
+
+Now we will start the modeling part. As said before, a XGBoost regression model will be used. Further feature engineering will be done with the recipes package, since this provides comprehensive preprocessing possibilities in a nice and tidy code structure.
 
 ## Performance on cross-validation subset
 
-Now, we will start the modeling part. As said before, a XGBoost regression model will be used. Further feature engineering will be done with the recipes package, since this provides comprehensive preprocessing possibilities in a nice and tidy code structue.
+We will start to prepare our data. To asses the performance on the training dataset, resampling will be used in the form of cross-validation. Our xgboost model is specified with the parsnip package. In addition, the recipes package is used to combine all the transformations and other features related to the model as a single block that can be used for any subset of the data.
+
+The recipe we used is applying the following transformations:
+
+- Remove Variables with too many missing data specified above
+- Assign simple values for Novel Factor Levels
+- Imputing the missing values via k-nearest neighbors
+- Create traditional dummy variables from nominal variables 
+- Remove variables that are highly sparse and unbalanced.
+- Use Logarithm for Outcome Variable
+
+After specifying the recipe, we will run a first XGboost model on the cross-validation dataset to get an impression about performance and variable importance without tuning. The results are displayed in the following table:
 
 ```{r}
 set.seed(121)
 vfold_data <- rsample::vfold_cv(data = training_data, v = 10)
-```
-
-Make specific recipe for XGBoost algorithm:
-
-```{r}
 
 xgb_recipe <- training_data %>%
   recipe(sale_price ~ .) %>%
@@ -255,15 +336,7 @@ xgb_recipe <- training_data %>%
   step_dummy(all_nominal(), -all_outcomes()) %>%
   step_nzv(everything()) %>%
   step_log(all_outcomes(), offset = 1) 
-  
 
-#Retrieve results of feature engineering (not necessary for model fitting).
-#prepped_rec <- prep(xgb_recipe, verbose = TRUE, retain = TRUE)
-#preproc_training_data <- recipes::bake(prepped_rec, new_data = NULL)
-```
-
-We will run a first quick xgboost model on cross-validation dataset to get an impression about performance and variable importance without tuning
-```{r}
 #specify model
 xgb <-  parsnip::boost_tree(trees = 100) %>%
   set_engine("xgboost", objective = "reg:squarederror") %>%
@@ -278,18 +351,31 @@ xgb_fit <- xgb_wf %>% fit_resamples(vfold_data)
 kable(collect_metrics(xgb_fit))
 ```
 
-The cross-validation accuracy is `r round(collect_metrics(xgb_fit)$mean[1],2)` in terms of RMSE and `r round(collect_metrics(xgb_fit)$mean[2],2)` in terms of R-squared. After looking at variable importance, we will improve the accuracy with model tuning.
+Without further optimizing, we get:
+
+- a RMSE of `r round(collect_metrics(xgb_fit)$mean[1],2)`
+- a R-squared of `r round(collect_metrics(xgb_fit)$mean[2],2)`
+
+After looking at variable importance, we will improve the accuracy with model tuning.
+
 
 ```{r}
 #variable importance
 xgb_wf %>% fit(training_data) %>%
   extract_fit_parsnip() %>% 
-  vip()
+  vip() +
+  theme_classic()
 ```
+
+Notes:
+
+- The created variable overall_sq is the most important variable for our model and seems to have replaced first and second floor square feet 
+- As already seen during data exploration, Overall Quality is again a very important variable in the XGBoost algorithm to predict SalePrice
+- Some further created variables are even more important than Overall Condition 
 
 ## Tune Hyperparameters
 
-Define model and parameter tuning:
+Now it is time to improve our model. For that purpose, the model and parameter tuning will be defined. We will use R-Square as variable to optimize. Then, the defined parameters will be tuned through iteration and the model accuracy after tuning is assessed. 
 
 ```{r}
 set.seed(1234)
@@ -329,15 +415,36 @@ xgb_res <- tune_grid(
 
 #look at tuning results
 kable(head(xgb_res %>% collect_metrics %>% arrange(desc(.metric) ,-mean)))
+
+xgb_res %>%
+  collect_metrics() %>%
+  filter(.metric == "rsq") %>%
+  select(mean, min_n:loss_reduction ) %>%
+  pivot_longer(min_n:loss_reduction,
+               values_to = "value",
+               names_to = "parameter"
+  ) %>%
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(alpha = 0.8, show.legend = FALSE) +
+  facet_wrap(~parameter, scales = "free_x") +
+  labs(x = NULL, y = "R-Squared") +
+  theme_classic() +
+  theme(panel.background = element_rect(colour = 'black'))
 ```
 
-The cross-validation accuracy after model tuning is `r round(collect_metrics(xgb_res)$mean[1],2)` in terms of RMSE and `r round(collect_metrics(xgb_res)$mean[2],2)` in terms of R-squared. Therefore, the accuracy was improved.
+After Model Tuning, we get a cross-validation accuracy of
+
+- `r round(collect_metrics(xgb_res)$mean[1],2)` in terms of RMSE
+- `r round(collect_metrics(xgb_res)$mean[2],2)` in terms of R-squared
+
+Therefore, the accuracy was improved.
+
 
 ## Finalize model
 
-Select best accuracy and finally fit model on whole training data to make test predictions.
+Finally, the model with best accuracy will be selected and this final model will be fitted on the whole training data to make test predictions.
 
-```{r}
+```{r class.source = 'fold-show'}
 best_xgb <- xgb_res %>%
   select_best(metric = "rmse")
 
@@ -357,7 +464,8 @@ submission %>% write_csv(here("Data", "submission.csv"))
 
 # Conclusion
 
-With hyperparameter tuning, the XGBosst cross-validation model performance regarding R-Squared could be improved by `r round((collect_metrics(xgb_res)$mean[2]- collect_metrics(xgb_fit)$mean[2])*100,2)` percentage points. In total, `r round(collect_metrics(xgb_res)$mean[2]*100,1)`% of the variance in the training set can be explained from our prediction model. 
-
+This project showed a basic workflow to set up and improve a XGBoost regression model to predict house prices. Whereas a XGBoost models without hyerparamter tuning already showed good results, it is great to see that the cross-validation model performance after hyperparameter tuning regarding R-Squared could be further improved by `r round((collect_metrics(xgb_res)$mean[2]- collect_metrics(xgb_fit)$mean[2])*100,2)` percentage points. In total, `r round(collect_metrics(xgb_res)$mean[2]*100,1)`% of the variance in the training set can be explained from our prediction model. 
+<br>
+<br>
 
 
